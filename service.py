@@ -103,9 +103,9 @@ class MilvusOperations:
         collection.upsert(entities, None, None, **kwargs)
         collection.flush()
 
-class UnifiedMilvusService:
+class Service:
     def __init__(self, milvus_host: str = "localhost", milvus_port: int = 19530):
-        """Initialize unified service with Milvus connection"""
+        """Initialize service with Milvus connection"""
         self.milvus_host = milvus_host
         self.milvus_port = milvus_port
 
@@ -603,7 +603,7 @@ class UnifiedMilvusService:
 
 
 # Initialize service
-service = UnifiedMilvusService()
+service = Service()
 
 
 # Flask app
