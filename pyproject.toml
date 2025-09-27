@@ -1,0 +1,13 @@
+[project]
+name = "shopnexus-recommender-system"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.1.2",
+    "numpy>=2.2.6",
+    "pymilvus>=2.6.2",
+    "pymilvus-model>=0.3.2",
+    "torch>=2.8.0",
+]
