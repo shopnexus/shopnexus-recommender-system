@@ -1,4 +1,3 @@
-import json
 import time
 import logging
 import numpy as np
@@ -38,7 +37,7 @@ class DataUtils:
         return b.decode("utf-8", errors="ignore")
     
     @staticmethod
-    def extract_product_fields(product: Dict) -> Tuple[str, str, str, str, str, float, int, int, List]:
+    def extract_product_fields(product: Dict) -> tuple[str, str, str, str, bool, float, int, int, list[Any]]:
         """Extract and normalize product fields"""
         name = product.get('name', '')
         description = product.get('description', '')
@@ -281,27 +280,27 @@ class Service:
 
         # Create weighted user preference vector
         vector_start = time.time()
-        user_vector = np.zeros(self.dense_dim)
+        preference_vector = np.zeros(self.dense_dim)
         total_weight = 0.0
 
         for product_id, preference_score in product_preferences.items():
             if product_id in product_vectors:
                 product_vector = product_vectors[product_id]
-                user_vector += preference_score * product_vector
+                preference_vector += preference_score * product_vector
                 total_weight += preference_score
 
         # Normalize the vector
         if total_weight > 0:
-            user_vector = user_vector / total_weight
+            preference_vector = preference_vector / total_weight
 
         vector_time = time.time() - vector_start
         total_time = time.time() - start_time
 
-        logger.debug(f"User vector calculation: {len(product_preferences)} products, "
+        logger.debug(f"Preference vector calculation: {len(product_preferences)} products, "
                      f"{len(product_vectors)} vectors fetched in {total_time:.3f}s "
                      f"(preference: {preference_time:.3f}s, fetch: {fetch_time:.3f}s, vector: {vector_time:.3f}s)")
 
-        return user_vector
+        return preference_vector
 
     def _get_product_vectors(self, product_ids: List[int]) -> Dict[int, np.ndarray]:
         """Fetch dense vectors for given product IDs from products collection"""
@@ -414,25 +413,26 @@ class Service:
                     f"{total_events_processed} events in {process_time:.3f}s "
                     f"(grouping: {group_time:.3f}s, processing: {process_time:.3f}s, flush: {flush_time:.3f}s, total: {total_time:.3f}s)")
 
-    def _prepare_product_data(self, products: List[Dict]) -> Tuple[List[str], List[int]]:
+    @staticmethod
+    def _prepare_product_data(products: List[Dict]) -> Tuple[List[str], List[int]]:
         """Prepare product data for processing"""
         product_data = []
         product_ids = []
-        
+
         for product in products:
             if not product.get('id') or not product.get('name'):
                 logger.warning(f"Skipping product with missing required fields: {product}")
                 continue
-                
+
             name, description, brand, category, _, _, _, _, _ = DataUtils.extract_product_fields(product)
             text_content = DataUtils.create_product_text_content(name, description, brand, category)
-            
+
             product_data.append(text_content)
             product_ids.append(product['id'])
-        
+
         return product_data, product_ids
-    
-    def _build_product_entities(self, products: List[Dict], product_ids: List[int], 
+
+    def _build_product_entities(self, products: List[Dict], product_ids: List[int],
                                embeddings: Dict = None) -> List[List]:
         """Build entities array for Milvus upsert"""
         names, descriptions, brands, is_actives, categories = [], [], [], [], []
@@ -593,7 +593,7 @@ class Service:
         
         return entities
     
-    def _generate_embeddings(self, texts: List[str]) -> Dict[str, List]:
+    def generate_embeddings(self, texts: List[str]) -> Dict[str, List]:
         """Generate embeddings for given texts"""
         try:
             return self.ef(texts)
@@ -622,12 +622,12 @@ def search():
     weights = data.get("weights", {"dense": 1.0, "sparse": 1.0})
     offset = data.get("offset", 0)
 
-    query_embeddings = service._generate_embeddings([query])
+    query_embeddings = service.generate_embeddings([query])
     logger.info(f"Embedding time: {(time.time() - start) * 1000:.2f} ms")
 
     result = service.hybrid_search(
         query_embeddings["dense"][0],
-        query_embeddings["sparse"][0],
+        query_embeddings["sparse"][[0]],
         dense_weight=weights.get("dense", 1.0),
         sparse_weight=weights.get("sparse", 1.0),
         offset=offset,
@@ -721,7 +721,7 @@ def health_check():
 
 def main():
     """Main function - run as Flask API server"""
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    app.run(host="0.0.0.0", port=8000, debug=False)
 
 
 if __name__ == "__main__":
