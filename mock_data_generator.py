@@ -399,7 +399,7 @@ def generate_mock_data_for_ncf(
 ) -> Tuple[List[Dict], MockDBConnection]:
     """
     Convenience function to generate mock data
-    
+      
     Returns:
         (interactions, mock_db_connection)
     """

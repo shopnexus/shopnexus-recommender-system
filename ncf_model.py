@@ -134,7 +134,14 @@ class NCFDataset(Dataset):
     - Minimum interactions filter
     """
     
-    def __init__(self, db_connection, days=90, negative_ratio=4, min_interactions_per_user=10):
+    def __init__(
+        self,
+        db_connection,
+        days=90,
+        negative_ratio=4,
+        min_interactions_per_user=10,
+        event_weight_map=None
+    ):
         """
         Args:
             db_connection: Database connection
@@ -144,6 +151,11 @@ class NCFDataset(Dataset):
         """
         self.negative_ratio = negative_ratio
         self.min_interactions_per_user = min_interactions_per_user
+        self.event_weight_map = event_weight_map or {
+            'view': 0.2,
+            'add_to_cart': 0.6,
+            'purchase': 0.95
+        }
         
         logger.info(f"Loading interactions from last {days} days...")
         interactions = self._load_interactions(db_connection, days)
@@ -236,14 +248,18 @@ class NCFDataset(Dataset):
         for interaction in self.filtered_interactions:
             user_id = interaction['user_id']
             product_id = interaction['product_id']
+            event_type = interaction.get('event_type')
             
             user_idx = self.user_id_to_idx[user_id]
             product_idx = self.product_id_to_idx[product_id]
+            label = self.event_weight_map.get(event_type, 1.0)
+            label = float(np.clip(label, 0.0, 1.0))
             
             samples.append({
                 'user_idx': user_idx,
                 'product_idx': product_idx,
-                'label': 1.0
+                'label': label,
+                'binary_label': 1.0
             })
         
         # Negative samples
@@ -270,7 +286,8 @@ class NCFDataset(Dataset):
                     samples.append({
                         'user_idx': user_idx,
                         'product_idx': product_idx,
-                        'label': 0.0
+                        'label': 0.0,
+                        'binary_label': 0.0
                     })
         
         return samples
@@ -283,7 +300,8 @@ class NCFDataset(Dataset):
         return {
             'user_idx': sample['user_idx'],
             'product_idx': sample['product_idx'],
-            'label': float(sample['label'])
+            'label': float(sample['label']),
+            'binary_label': float(sample.get('binary_label', 1.0 if sample['label'] > 0 else 0.0))
         }
 
 
@@ -332,10 +350,7 @@ class NCFTrainer:
         for batch in train_loader:
             user_ids = batch['user_idx'].to(self.device)
             product_ids = batch['product_idx'].to(self.device)
-            labels = batch['label'].float().to(self.device)  # FIX: Convert to float32
-            
-            # Label smoothing: [0, 1] → [0.05, 0.95]
-            labels = labels * 0.9 + 0.05
+            labels = batch['label'].float().to(self.device)  # Weighted labels already scaled
             
             # Forward pass
             predictions = self.model(user_ids, product_ids)
@@ -358,13 +373,18 @@ class NCFTrainer:
         self.model.eval()
         total_loss = 0.0
         all_predictions = []
-        all_labels = []
+        all_binary_labels = []
         num_batches = 0
         
         for batch in val_loader:
             user_ids = batch['user_idx'].to(self.device)
             product_ids = batch['product_idx'].to(self.device)
-            labels = batch['label'].float().to(self.device)  # FIX: Convert to float32
+            labels = batch['label'].float().to(self.device)  # Weighted labels
+            binary_labels = batch.get('binary_label')
+            if binary_labels is not None:
+                binary_labels = binary_labels.float().to(self.device)
+            else:
+                binary_labels = (labels > 0).float()
             
             predictions = self.model(user_ids, product_ids)
             loss = self.criterion(predictions, labels)
@@ -373,12 +393,12 @@ class NCFTrainer:
             num_batches += 1
             
             all_predictions.extend(predictions.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            all_binary_labels.extend(binary_labels.cpu().numpy())
         
         # Compute AUC
         from sklearn.metrics import roc_auc_score
         try:
-            auc = roc_auc_score(all_labels, all_predictions)
+            auc = roc_auc_score(all_binary_labels, all_predictions)
         except:
             auc = 0.5  # If AUC computation fails
         
