@@ -124,6 +124,85 @@ def health_check():
             "customer": service.customer_collection.num_entities
         }
     })
+    
+# ------------------------------------------------------------------------------------------------------------------------------------
+@app.route("/recommendations/ncf/<int:account_id>", methods=["GET"])
+def get_ncf_recommendations(account_id):
+    """
+    NCF recommendations endpoint
+    
+    GET /recommendations/ncf/123?limit=20
+    
+    Returns:
+        - NCF predictions if user in training data
+        - Popular products if user not in training data (cold start)
+    """
+    limit = request.args.get("limit", 20, type=int)
+    
+    try:
+        recommendations = service.get_ncf_recommendations(
+            account_id=account_id,
+            limit=limit,
+            exclude_interacted=True
+        )
+        
+        return jsonify({
+            "account_id": account_id,
+            "method": "ncf_collaborative_filtering",
+            "recommendations": recommendations,
+            "count": len(recommendations)
+        })
+    
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/recommendations/hybrid/<int:account_id>", methods=["GET"])
+def get_hybrid_recommendations(account_id):
+    """
+    Hybrid recommendations (Content-Based + NCF + Popular)
+    
+    GET /recommendations/hybrid/123?limit=20
+    
+    Best accuracy - combines multiple signals
+    """
+    limit = request.args.get("limit", 20, type=int)
+    
+    # Custom weights (optional)
+    content_weight = request.args.get('content_weight', 0.5, type=float)
+    collaborative_weight = request.args.get('collaborative_weight', 0.4, type=float)
+    popular_weight = request.args.get('popular_weight', 0.1, type=float)
+    
+    weights = {
+        'content': content_weight,
+        'collaborative': collaborative_weight,
+        'popular': popular_weight
+    }
+    
+    try:
+        recommendations = service.get_hybrid_recommendations(
+            account_id=account_id,
+            limit=limit,
+            weights=weights
+        )
+        
+        return jsonify({
+            "account_id": account_id,
+            "method": "hybrid",
+            "weights": weights,
+            "recommendations": recommendations,
+            "count": len(recommendations)
+        })
+    
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
+      
+      
+      
+      
+      
+      
 
 def main():
     """Main function - run as Flask API server"""

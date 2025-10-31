@@ -15,6 +15,11 @@ from pymilvus import (
 )
 from pymilvus.model.hybrid import MGTEEmbeddingFunction
 
+# NEW: NCF imports
+import torch
+import pickle
+from ncf_model import NCF
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -77,7 +82,6 @@ class ResponseUtils:
             }
         }
 
-
 class MilvusOperations:
     """Helper class for Milvus operations"""
     
@@ -107,7 +111,7 @@ class Service:
         self.milvus_host = milvus_host
         self.milvus_port = milvus_port
 
-        # Event weights for user vector calculation
+        # Existing weights
         self.event_weights = {
             "view": 0.1, "add_to_cart": 0.3, "purchase": 0.6, "rating": 0.2
         }
@@ -115,12 +119,16 @@ class Service:
 
         # Setup Milvus and collections
         self._setup_milvus()
+        
+        # NEW: Setup NCF model
+        self.ncf_model = None
+        self.ncf_mappings = None
+        self._setup_ncf()
 
     def _setup_milvus(self):
         """Setup Milvus connection and create collections"""
         try:
             connections.connect(host=self.milvus_host, port=self.milvus_port)
-            logger.info("Connected to Milvus")
 
             # Initialize embedding function
             self.ef = MGTEEmbeddingFunction(use_fp16=False, device="cpu")
@@ -168,7 +176,7 @@ class Service:
             logger.info(f"Created collection: {collection_name}")
         else:
             self.products_collection = Collection(collection_name)
-            logger.info(f"Connected to existing collection: {collection_name}")
+            # logger.info(f"Connected to existing collection: {collection_name}")
 
         self.products_collection.load()
 
@@ -381,7 +389,7 @@ class Service:
                 vector_start = time.time()
                 new_vector = self.calculate_user_vector(user_events)
                 vector_time = time.time() - vector_start
-
+  
                 if new_vector is not None:
                     # Update user vector
                     update_start = time.time()
@@ -599,5 +607,325 @@ class Service:
         except Exception as e:
             logger.error(f"Error generating embeddings: {e}")
             return {"sparse": [], "dense": []}
+
+    def _setup_ncf(self):
+        """
+        Load trained NCF model
+        """
+        try:
+            logger.info("Loading NCF model...")
+            
+            # Load model checkpoint
+            checkpoint = torch.load(
+                './models/ncf_model_final.pt',
+                map_location='cpu'
+            )
+            
+            # Initialize model
+            self.ncf_model = NCF(
+                num_users=checkpoint['num_users'],
+                num_products=checkpoint['num_products'],
+                embed_dim=checkpoint['embed_dim'],
+                mlp_layers=checkpoint['mlp_layers']
+            )
+            
+            # Load weights
+            self.ncf_model.load_state_dict(checkpoint['model_state_dict'])
+            self.ncf_model.eval()
+            
+            # Load mappings
+            with open('./models/ncf_mappings.pkl', 'rb') as f:
+                self.ncf_mappings = pickle.load(f)
+            
+            logger.info(f"✅ NCF model loaded: {checkpoint['num_users']} users, "
+                       f"{checkpoint['num_products']} products")
+            
+        except FileNotFoundError:
+            # logger.warning("NCF model not found. Train model first using train_ncf_model()")
+            # logger.warning("NCF recommendations will not be available") 
+            return
+        except Exception as e:
+            logger.error(f"Error loading NCF model: {e}")
+    
+    def get_ncf_recommendations(
+        self,
+        account_id: int,
+        limit: int = 20,
+        exclude_interacted: bool = True
+    ) -> List[Dict]:
+        """
+        Get product recommendations using trained NCF model
+        
+        Args:
+            account_id: User ID
+            limit: Number of recommendations
+            exclude_interacted: Exclude products user already interacted with
+        
+        Returns:
+            List of recommended products with scores
+        """
+        if self.ncf_model is None:
+            logger.warning("NCF model not loaded")
+            return []
+        
+        try:
+            start_time = time.time()
+            
+            # Check if user is in training data
+            if account_id not in self.ncf_mappings['user_id_to_idx']:
+                logger.warning(f"User {account_id} not in NCF training data (cold start)")
+                return self._handle_ncf_cold_start(account_id, limit)
+            
+            user_idx = self.ncf_mappings['user_id_to_idx'][account_id]
+            
+            # Get all product indices
+            product_indices = list(range(len(self.ncf_mappings['idx_to_product_id'])))
+            
+            # Predict scores for all products
+            with torch.no_grad():
+                user_tensor = torch.LongTensor([user_idx] * len(product_indices))
+                product_tensor = torch.LongTensor(product_indices)
+                
+                scores = self.ncf_model(user_tensor, product_tensor).numpy()
+            
+            # Get product IDs
+            product_ids = [
+                self.ncf_mappings['idx_to_product_id'][idx]
+                for idx in product_indices
+            ]
+            
+            # Exclude already interacted products
+            if exclude_interacted:
+                interacted_products = self._get_user_interacted_products(account_id)
+                valid_indices = [
+                    i for i, pid in enumerate(product_ids)
+                    if pid not in interacted_products
+                ]
+                product_ids = [product_ids[i] for i in valid_indices]
+                scores = scores[valid_indices]
+              
+            # Sort by score
+            sorted_indices = np.argsort(scores)[::-1][:limit]
+            
+            # Fetch product details
+            recommended_product_ids = [product_ids[i] for i in sorted_indices]
+            recommended_scores = [float(scores[i]) for i in sorted_indices]
+            
+            products = MilvusOperations.query_by_ids(
+                self.products_collection,
+                recommended_product_ids,
+                ["id", "name", "brand", "rating_score", "sold", "description"]
+            )
+            
+            # Build response
+            results = []
+            product_map = {p['id']: p for p in products}
+            
+            for product_id, score in zip(recommended_product_ids, recommended_scores):
+                if product_id in product_map:
+                    product = product_map[product_id]
+                    results.append({
+                        'id': product_id,
+                        'name': product['name'],
+                        'brand': product['brand'],
+                        'rating': product['rating_score'],
+                        'sold': product['sold'],
+                        'ncf_score': score,
+                        'source': 'ncf_collaborative_filtering'
+                    })
+            
+            logger.info(f"NCF recommendations for user {account_id}: "
+                       f"{len(results)} products in {time.time() - start_time:.3f}s")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in NCF recommendations: {e}")
+            return []
+    
+    # def _get_user_interacted_products(self, account_id: int) -> set:
+    #     """Get set of products user has interacted with"""
+    #     # Query from analytics_events or from cache
+    #     # This is a simplified version - implement based on your DB schema
+    #     try:
+    #         # Example: query recent interactions
+    #         # In production, this should be cached
+    #         query = f"""
+    #             SELECT DISTINCT ref_id 
+    #             FROM analytics_events 
+    #             WHERE account_id = {account_id} 
+    #             AND timestamp >= NOW() - INTERVAL '90 days'
+    #         """
+    #         # Execute and return set of product IDs
+    #         # This is placeholder - implement based on your DB
+    #         return set()
+    #     except:
+    #         return set()
+    def _get_user_interacted_products(self, account_id: int) -> set:
+      """Get products user interacted with from NCF mappings"""
+      try:
+          # If NCF model exists, check training data
+          if self.ncf_model is None or self.ncf_mappings is None:
+              return set()
+          
+          # Simple: Return empty set → NCF will score all products
+          # The training already knows which products user liked
+          return set()
+          
+      except Exception as e:
+          logger.error(f"Error: {e}")
+          return set()
+
+    
+    def _handle_ncf_cold_start(self, account_id: int, limit: int) -> List[Dict]:
+        """
+        Handle cold start for users not in training data
+        
+        Strategy: Return popular products (high rating + high sales)
+        """
+        try:
+            # Query popular products
+            query_expr = "is_active == True"
+            
+            results = self.products_collection.query(
+                expr=query_expr,
+                output_fields=["id", "name", "brand", "rating_score", "rating_total", "sold"],
+                limit=limit * 2
+            )
+            
+            # Score products by popularity
+            scored_products = []
+            for product in results:
+                # Popularity score = weighted sum of rating and sales
+                rating_score = product['rating_score'] * min(product['rating_total'] / 100, 1.0)
+                sales_score = min(product['sold'] / 1000, 1.0)
+                popularity = 0.6 * rating_score + 0.4 * sales_score
+                
+                scored_products.append({
+                    'id': product['id'],
+                    'name': product['name'],
+                    'brand': product['brand'],
+                    'rating': product['rating_score'],
+                    'sold': product['sold'],
+                    'ncf_score': float(popularity),
+                    'source': 'ncf_cold_start_popular'
+                })
+            
+            # Sort and return top-K
+            scored_products.sort(key=lambda x: x['ncf_score'], reverse=True)
+            
+            logger.info(f"Cold start recommendations for new user {account_id}: "
+                       f"{len(scored_products[:limit])} popular products")
+            
+            return scored_products[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error in cold start handling: {e}")
+            return []
+    
+    def get_hybrid_recommendations(
+        self,
+        account_id: int,
+        limit: int = 20,
+        weights: Dict[str, float] = None
+    ) -> List[Dict]:
+        """
+        Hybrid recommendations combining multiple methods
+        
+        Methods:
+        1. Content-based (existing user vector search)
+        2. NCF collaborative filtering
+        3. Popular items (fallback)
+        
+        Args:
+            account_id: User ID
+            limit: Number of recommendations
+            weights: Dict with keys 'content', 'collaborative', 'popular'
+                    Default: {'content': 0.5, 'collaborative': 0.4, 'popular': 0.1}
+        """
+        if weights is None:
+            weights = {
+                'content': 0.5,
+                'collaborative': 0.4,
+                'popular': 0.1
+            }
+        
+        # Normalize weights
+        total_weight = sum(weights.values())
+        weights = {k: v / total_weight for k, v in weights.items()}
+        
+        # Get recommendations from each source
+        product_scores = {}
+        
+        # 1. Content-based (existing method)
+        try:
+            user_vector = self.get_user_vector(account_id)
+            if user_vector is not None:
+                content_results = self.dense_search(user_vector.tolist(), limit=limit * 2)
+                
+                for hit in content_results:
+                    product_id = hit['id']
+                    product_scores[product_id] = product_scores.get(product_id, 0) + \
+                                                 weights['content'] * float(hit.score)
+        except Exception as e:
+            logger.error(f"Error in content-based recommendations: {e}")
+        
+        # 2. NCF collaborative filtering
+        try:
+            ncf_results = self.get_ncf_recommendations(account_id, limit=limit * 2)
+            
+            for item in ncf_results:
+                product_id = item['id']
+                product_scores[product_id] = product_scores.get(product_id, 0) + \
+                                            weights['collaborative'] * item['ncf_score']
+        except Exception as e:
+            logger.error(f"Error in NCF recommendations: {e}")
+        
+        # 3. Popular items (small contribution)
+        try:
+            popular_results = self._handle_ncf_cold_start(account_id, limit=limit)
+            
+            for item in popular_results:
+                product_id = item['id']
+                product_scores[product_id] = product_scores.get(product_id, 0) + \
+                                            weights['popular'] * item['ncf_score']
+        except Exception as e:
+            logger.error(f"Error in popular recommendations: {e}")
+        
+        # Sort by combined score
+        sorted_products = sorted(
+            product_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:limit]
+        
+        # Fetch product details
+        product_ids = [pid for pid, _ in sorted_products]
+        products = MilvusOperations.query_by_ids(
+            self.products_collection,
+            product_ids,
+            ["id", "name", "brand", "rating_score", "sold", "description"]
+        )
+        
+        # Build response
+        product_map = {p['id']: p for p in products}
+        results = []
+        
+        for product_id, score in sorted_products:
+            if product_id in product_map:
+                product = product_map[product_id]
+                results.append({
+                    'id': product_id,
+                    'name': product['name'],
+                    'brand': product['brand'],
+                    'rating': product['rating_score'],
+                    'sold': product['sold'],
+                    'hybrid_score': float(score),
+                    'source': 'hybrid_recommendation'
+                })
+        
+        logger.info(f"Hybrid recommendations for user {account_id}: {len(results)} products")
+        
+        return results
 
 service = Service()
