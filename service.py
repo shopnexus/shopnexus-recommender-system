@@ -2,8 +2,7 @@ import time
 import logging
 import numpy as np
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any
-from flask import Flask, request, jsonify
+from typing import Dict, List, Optional, Tuple
 from pymilvus import (
     connections,
     utility,
@@ -16,91 +15,11 @@ from pymilvus import (
 )
 from pymilvus.model.hybrid import MGTEEmbeddingFunction
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+from config import MAX_LENGTH_EMBED, DESCRIPTION_LENGTH, event_weights
+from utils import DataUtils, MilvusOperations
+
 logger = logging.getLogger(__name__)
 
-# Constants
-MAX_LENGTH_EMBED = 4048
-DESCRIPTION_LENGTH = 10 * 1024
-
-# Helper functions
-class DataUtils:
-    """Utility class for data processing"""
-    
-    @staticmethod
-    def truncate_text(text: str, max_length: int = MAX_LENGTH_EMBED) -> str:
-        """Truncate text to max length"""
-        if not text:
-            return ""
-        b = text.encode("utf-8")[:max_length]
-        return b.decode("utf-8", errors="ignore")
-    
-    @staticmethod
-    def extract_product_fields(product: Dict) -> tuple[str, str, str, str, bool, float, int, int, list[Any]]:
-        """Extract and normalize product fields"""
-        name = product.get('name', '')
-        description = product.get('description', '')
-        brand = product.get('brand', '')
-        category = product.get('category', '')
-        is_active = bool(product.get('is_active', False))
-        
-        rating = product.get('rating', {})
-        rating_score = float(rating.get('score', 0.0))
-        rating_total = int(rating.get('total', 0))
-        
-        sold = int(product.get('sold', 0))
-        skus = product.get('skus', [])
-        
-        return name, description, brand, category, is_active, rating_score, rating_total, sold, skus
-    
-    @staticmethod
-    def create_product_text_content(name: str, description: str, brand: str, category: str) -> str:
-        """Create combined text content for embedding"""
-        text_content = f"{name}. {description}. Brand: {brand}. Category: {category}"
-        return DataUtils.truncate_text(text_content, MAX_LENGTH_EMBED)
-
-class ResponseUtils:
-    """Utility class for API responses"""
-    
-    @staticmethod
-    def create_performance_response(message: str, count: int, processing_time: float, 
-                                  total_time: float, processed_at: str = None) -> Dict:
-        """Create standardized performance response"""
-        return {
-            "message": message,
-            "processed_at": processed_at or datetime.now().isoformat(),
-            "performance": {
-                "items_count": count,
-                "processing_time_seconds": round(processing_time, 3),
-                "total_time_seconds": round(total_time, 3),
-                "items_per_second": round(count / processing_time, 2) if processing_time > 0 else 0
-            }
-        }
-
-
-class MilvusOperations:
-    """Helper class for Milvus operations"""
-    
-    @staticmethod
-    def query_by_ids(collection: Collection, ids: List[int], output_fields: List[str]) -> List[Dict]:
-        """Query collection by list of IDs"""
-        if not ids:
-            return []
-        id_list = ','.join(map(str, ids))
-        expr = f"id in [{id_list}]"
-        return collection.query(expr=expr, output_fields=output_fields, limit=len(ids))
-    
-    @staticmethod
-    def query_by_account_id(collection: Collection, account_id: int, output_fields: List[str]) -> List[Dict]:
-        """Query collection by account ID"""
-        return collection.query(expr=f"account_id == {account_id}", output_fields=output_fields, limit=1)
-    
-    @staticmethod
-    def upsert_and_flush(collection: Collection, entities: List[List], **kwargs):
-        """Upsert entities and flush collection"""
-        collection.upsert(entities, None, None, **kwargs)
-        collection.flush()
 
 class Service:
     def __init__(self, milvus_host: str = "localhost", milvus_port: int = 19530):
@@ -108,10 +27,6 @@ class Service:
         self.milvus_host = milvus_host
         self.milvus_port = milvus_port
 
-        # Event weights for user vector calculation
-        self.event_weights = {
-            "view": 0.1, "add_to_cart": 0.3, "purchase": 0.6, "rating": 0.2
-        }
         self.update_weight = 0.5
 
         # Setup Milvus and collections
@@ -141,16 +56,37 @@ class Service:
 
         if not utility.has_collection(collection_name):
             fields = [
+                # Product ID - primary key matching TProductDetail.id
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=False),
+                
+                # Product code matching TProductDetail.code
+                FieldSchema(name="code", dtype=DataType.VARCHAR, max_length=512),
+                
+                # Product name matching TProductDetail.name
                 FieldSchema(name="name", dtype=DataType.VARCHAR, max_length=1024),
+                
+                # Product description matching TProductDetail.description
                 FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=DESCRIPTION_LENGTH),
-                FieldSchema(name="brand", dtype=DataType.VARCHAR, max_length=512),
+                
+                # Brand object matching TProductDetail.brand (Brand: {id, code, name, description})
+                FieldSchema(name="brand", dtype=DataType.JSON),
+                
+                # Active status matching TProductDetail.is_active
                 FieldSchema(name="is_active", dtype=DataType.BOOL),
-                FieldSchema(name="category", dtype=DataType.VARCHAR, max_length=512),
-                FieldSchema(name="rating_score", dtype=DataType.DOUBLE),
-                FieldSchema(name="rating_total", dtype=DataType.INT64),
-                FieldSchema(name="sold", dtype=DataType.INT64),
+                
+                # Category object matching TProductDetail.category (Category: {id, name, description, parent_id})
+                FieldSchema(name="category", dtype=DataType.JSON),
+                
+                # Rating object matching TProductDetail.rating ({score, total, breakdown})
+                FieldSchema(name="rating", dtype=DataType.JSON),
+                
+                # SKUs array matching TProductDetail.skus
                 FieldSchema(name="skus", dtype=DataType.JSON),
+                
+                # Specifications object matching TProductDetail.specifications (Record<string, string>)
+                FieldSchema(name="specifications", dtype=DataType.JSON),
+                
+                # Vector fields for hybrid search
                 FieldSchema(name="sparse_vector", dtype=DataType.SPARSE_FLOAT_VECTOR),
                 FieldSchema(name="dense_vector", dtype=DataType.FLOAT_VECTOR, dim=self.dense_dim),
             ]
@@ -172,6 +108,7 @@ class Service:
             logger.info(f"Connected to existing collection: {collection_name}")
 
         self.products_collection.load()
+        # self.products_collection.drop()
 
     def _setup_customer_collection(self):
         """Setup customer collection for user vectors"""
@@ -249,7 +186,7 @@ class Service:
             if not ref_id or not event_type:
                 continue
 
-            weight = self.event_weights.get(event_type, 0.1)
+            weight = event_weights.get(event_type, 0.1)
             metadata_weight = 1.0
 
             if 'metadata' in event:
@@ -424,35 +361,43 @@ class Service:
                 logger.warning(f"Skipping product with missing required fields: {product}")
                 continue
 
-            name, description, brand, category, _, _, _, _, _ = DataUtils.extract_product_fields(product)
+            product_id, code, name, description, brand, is_active, category, rating, skus, specifications = DataUtils.extract_product_fields(product)
             text_content = DataUtils.create_product_text_content(name, description, brand, category)
 
             product_data.append(text_content)
-            product_ids.append(product['id'])
+            product_ids.append(product_id)
 
         return product_data, product_ids
 
     def _build_product_entities(self, products: List[Dict], product_ids: List[int],
                                embeddings: Dict = None) -> List[List]:
-        """Build entities array for Milvus upsert"""
-        names, descriptions, brands, is_actives, categories = [], [], [], [], []
-        rating_scores, rating_totals, solds, skus_list = [], [], [], []
+        """Build entities array for Milvus upsert matching TProductDetail schema"""
+        # Initialize lists for all fields matching the schema order:
+        # id, code, name, description, brand, is_active, category, rating, skus, specifications, sparse_vector, dense_vector
+        ids_list, codes, names, descriptions = [], [], [], []
+        brands, is_actives, categories = [], [], []
+        ratings, skus_list, specifications_list = [], [], []
         
         for product in products:
-            if product.get('id') not in product_ids:
+            product_id = product.get('id')
+            if product_id not in product_ids:
                 continue
                 
-            name, description, brand, category, is_active, rating_score, rating_total, sold, skus = DataUtils.extract_product_fields(product)
+            extracted_id, code, name, description, brand, is_active, category, rating, skus, specifications = DataUtils.extract_product_fields(product)
             
+            # Use the extracted_id to ensure consistency
+            product_id = extracted_id
+            
+            ids_list.append(product_id)
+            codes.append(code)
             names.append(name)
             descriptions.append(description)
             brands.append(brand)
             is_actives.append(is_active)
             categories.append(category)
-            rating_scores.append(rating_score)
-            rating_totals.append(rating_total)
-            solds.append(sold)
+            ratings.append(rating)
             skus_list.append(skus)
+            specifications_list.append(specifications)
         
         if embeddings:
             sparse_vectors = embeddings["sparse"]
@@ -463,8 +408,8 @@ class Service:
             dense_vectors = [[0.0] * self.dense_dim for _ in product_ids]
         
         return [
-            product_ids, names, descriptions, brands, is_actives, categories,
-            rating_scores, rating_totals, solds, skus_list, sparse_vectors, dense_vectors
+            ids_list, codes, names, descriptions, brands, is_actives, categories,
+            ratings, skus_list, specifications_list, sparse_vectors, dense_vectors
         ]
     
     def update_products_batch(self, products: List[Dict], metadata_only: bool = False) -> int:
@@ -600,129 +545,3 @@ class Service:
         except Exception as e:
             logger.error(f"Error generating embeddings: {e}")
             return {"sparse": [], "dense": []}
-
-
-# Initialize service
-service = Service()
-
-
-# Flask app
-app = Flask(__name__)
-
-@app.route("/search", methods=["POST"])
-def search():
-    """Product search endpoint"""
-    start = time.time()
-    data = request.json
-    query = data.get("query")
-    if not query:
-        return jsonify({"error": "Missing query"}), 400
-
-    limit = data.get("limit", 10)
-    weights = data.get("weights", {"dense": 1.0, "sparse": 1.0})
-    offset = data.get("offset", 0)
-
-    query_embeddings = service.generate_embeddings([query])
-    logger.info(f"Embedding time: {(time.time() - start) * 1000:.2f} ms")
-
-    result = service.hybrid_search(
-        query_embeddings["dense"][0],
-        query_embeddings["sparse"][[0]],
-        dense_weight=weights.get("dense", 1.0),
-        sparse_weight=weights.get("sparse", 1.0),
-        offset=offset,
-        limit=limit,
-    )
-
-    return jsonify([{"id": hit["id"], "score": hit.score} for hit in result])
-
-
-@app.route("/analytics/process", methods=["POST"])
-def process_analytics():
-    """Process analytics events endpoint"""
-    start_time = time.time()
-    data = request.json
-    events = data.get("events", [])
-
-    if not events:
-        return jsonify({"error": "No events provided"}), 400
-
-    process_start = time.time()
-    service.process_events_batch(events)
-    process_time = time.time() - process_start
-    total_time = time.time() - start_time
-
-    logger.info(f"Analytics processing completed: {len(events)} events in {process_time:.3f}s (total: {total_time:.3f}s)")
-
-    return jsonify(ResponseUtils.create_performance_response(
-        f"Processed {len(events)} events", len(events), process_time, total_time
-    ))
-
-
-@app.route("/user/<int:account_id>/recommendations", methods=["GET"])
-def get_recommendations(account_id):
-    """Get product recommendations for a user based on their preferences"""
-    limit = request.args.get("limit", 10, type=int)
-
-    try:
-        user_vector = service.get_user_vector(account_id)
-        if user_vector is None:
-            return jsonify([])
-
-        results = service.dense_search(user_vector.tolist(), limit=limit)
-        return jsonify([{"id": hit["id"], "score": float(hit.score)} for hit in results])
-
-    except Exception as e:
-        logger.error(f"Error getting recommendations for user {account_id}: {e}")
-        return jsonify({"error": "Failed to get recommendations"}), 500
-
-
-@app.route("/products", methods=["POST"])
-def update_products():
-    """Update products in Milvus collection"""
-    start_time = time.time()
-    data = request.json
-    products = data.get("products", [])
-    metadata_only = data.get("metadata_only", False)
-
-    if not products:
-        return jsonify({"error": "No products provided"}), 200
-
-    try:
-        process_start = time.time()
-        processed_count = service.update_products_batch(products, metadata_only=metadata_only)
-        process_time = time.time() - process_start
-        total_time = time.time() - start_time
-
-        logger.info(f"Products update completed: {processed_count} products processed in {process_time:.3f}s (total: {total_time:.3f}s)")
-
-        return jsonify(ResponseUtils.create_performance_response(
-            f"Successfully updated {processed_count} products", 
-            processed_count, process_time, total_time
-        ))
-
-    except Exception as e:
-        logger.error(f"Error updating products: {e}")
-        return jsonify({"error": "Failed to update products"}), 500
-
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "collections": {
-            "products": service.products_collection.num_entities,
-            "customer": service.customer_collection.num_entities
-        }
-    })
-
-
-def main():
-    """Main function - run as Flask API server"""
-    app.run(host="0.0.0.0", port=8000, debug=False)
-
-
-if __name__ == "__main__":
-    main()
