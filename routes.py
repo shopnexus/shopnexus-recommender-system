@@ -28,7 +28,7 @@ def register_routes(app, service):
 
         result = service.hybrid_search(
             query_embeddings["dense"][0],
-            query_embeddings["sparse"][0],
+            query_embeddings["sparse"][[0]],
             dense_weight=weights.get("dense", 1.0),
             sparse_weight=weights.get("sparse", 1.0),
             offset=offset,
