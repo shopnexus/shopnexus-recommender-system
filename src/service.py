@@ -222,7 +222,7 @@ class Service:
             item_cf_embedding = self.item_cf_embeddings[model_item_idx]
             
             if item_id not in content_vectors:
-                logger.warning(f"No content vector for item {item_id}, skipping")
+                # logger.warning(f"No content vector for item {item_id}, skipping")
                 continue
             
             content_vector = content_vectors[item_id]
