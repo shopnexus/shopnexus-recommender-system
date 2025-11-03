@@ -9,163 +9,52 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingFusion:
-    """Fusion layer for combining content and CF embeddings"""
+    """Fusion layer for combining content and CF embeddings with safety-first normalization."""
     
-    def __init__(self, content_dim: int, cf_dim: int, output_dim: int = 768):
-        """Initialize fusion layer
-        
-        Args:
-            content_dim: Dimension of content embedding (MGTE dense vector)
-            cf_dim: Dimension of CF embedding
-            output_dim: Output dimension (default 768)
-        """
+    def __init__(self, content_dim: int, cf_dim: int):
+        """Initialize fusion with per-branch LayerNorm and no shrinking. Output dim will be content_dim + cf_dim."""
         self.content_dim = content_dim
         self.cf_dim = cf_dim
-        self.output_dim = output_dim
         
-        # Create PyTorch linear layer
-        input_dim = content_dim + cf_dim
-        self.fusion_layer = nn.Linear(input_dim, output_dim, bias=True)
-        
-        # Initialize weights
-        nn.init.xavier_uniform_(self.fusion_layer.weight)
-        nn.init.zeros_(self.fusion_layer.bias)
-        
-        self.fusion_layer.eval()  # Set to evaluation mode by default
+        # Per-branch normalization to prevent dominance from scale differences
+        self.content_norm = nn.LayerNorm(content_dim)
+        self.cf_norm = nn.LayerNorm(cf_dim)
+
+        self.content_norm.eval()
+        self.cf_norm.eval()
+
+    @staticmethod
+    def _l2_normalize(vec: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+        norm = np.linalg.norm(vec)
+        if norm < eps:
+            return vec
+        return vec / norm
     
-    def fuse_item_embedding(
-        self,
-        mgte_dense: np.ndarray,
-        cf: np.ndarray
-    ) -> np.ndarray:
-        """Fuse item embedding: combine MGTE dense and CF embeddings
-        
-        Args:
-            mgte_dense: MGTE dense vector (content embedding)
-            cf: CF embedding vector
-            
-        Returns:
-            Fused embedding vector of shape (output_dim,)
-        """
-        # Ensure arrays are 1D and correct dimensions
-        mgte_dense = np.asarray(mgte_dense).flatten()
-        cf = np.asarray(cf).flatten()
-        
-        if len(mgte_dense) != self.content_dim:
+    def fuse_embeddings(self, content_vec: np.ndarray, cf_vec: np.ndarray) -> np.ndarray:
+        """General fusion for a single pair of embeddings with normalization and MLP."""
+        content = np.asarray(content_vec).flatten()
+        cf = np.asarray(cf_vec).flatten()
+
+        if len(content) != self.content_dim:
             raise ValueError(
-                f"MGTE dense vector dimension mismatch: "
-                f"expected {self.content_dim}, got {len(mgte_dense)}"
+                f"Content vector dimension mismatch: expected {self.content_dim}, got {len(content)}"
             )
         if len(cf) != self.cf_dim:
             raise ValueError(
-                f"CF vector dimension mismatch: "
-                f"expected {self.cf_dim}, got {len(cf)}"
+                f"CF vector dimension mismatch: expected {self.cf_dim}, got {len(cf)}"
             )
-        
-        # Concatenate embeddings
-        concat = np.concatenate([mgte_dense, cf])
-        
-        # Convert to torch tensor
-        concat_tensor = torch.from_numpy(concat).float().unsqueeze(0)
-        
-        # Pass through linear layer
+
         with torch.no_grad():
-            fused_tensor = self.fusion_layer(concat_tensor)
-        
-        # Convert back to numpy
-        fused = fused_tensor.squeeze(0).numpy()
-        
-        return fused
-    
-    def fuse_user_embedding(
-        self,
-        recent_mgte_dense_avg: np.ndarray,
-        cf: np.ndarray
-    ) -> np.ndarray:
-        """Fuse user embedding: combine recent MGTE dense average and CF embeddings
-        
-        Args:
-            recent_mgte_dense_avg: Average of recent product MGTE dense vectors
-            cf: CF user embedding vector
-            
-        Returns:
-            Fused user embedding vector of shape (output_dim,)
-        """
-        # Ensure arrays are 1D and correct dimensions
-        recent_mgte_dense_avg = np.asarray(recent_mgte_dense_avg).flatten()
-        cf = np.asarray(cf).flatten()
-        
-        if len(recent_mgte_dense_avg) != self.content_dim:
-            raise ValueError(
-                f"Recent MGTE dense vector dimension mismatch: "
-                f"expected {self.content_dim}, got {len(recent_mgte_dense_avg)}"
-            )
-        if len(cf) != self.cf_dim:
-            raise ValueError(
-                f"CF vector dimension mismatch: "
-                f"expected {self.cf_dim}, got {len(cf)}"
-            )
-        
-        # Concatenate embeddings
-        concat = np.concatenate([recent_mgte_dense_avg, cf])
-        
-        # Convert to torch tensor
-        concat_tensor = torch.from_numpy(concat).float().unsqueeze(0)
-        
-        # Pass through linear layer
-        with torch.no_grad():
-            fused_tensor = self.fusion_layer(concat_tensor)
-        
-        # Convert back to numpy
-        fused = fused_tensor.squeeze(0).numpy()
-        
-        return fused
-    
-    def fuse_item_embeddings_batch(
-        self,
-        mgte_dense_batch: np.ndarray,
-        cf_batch: np.ndarray
-    ) -> np.ndarray:
-        """Fuse multiple item embeddings in batch
-        
-        Args:
-            mgte_dense_batch: Array of shape (batch_size, content_dim)
-            cf_batch: Array of shape (batch_size, cf_dim)
-            
-        Returns:
-            Array of shape (batch_size, output_dim)
-        """
-        mgte_dense_batch = np.asarray(mgte_dense_batch)
-        cf_batch = np.asarray(cf_batch)
-        
-        if mgte_dense_batch.shape[0] != cf_batch.shape[0]:
-            raise ValueError("Batch sizes must match")
-        
-        if mgte_dense_batch.shape[1] != self.content_dim:
-            raise ValueError(
-                f"MGTE dense batch dimension mismatch: "
-                f"expected {self.content_dim}, got {mgte_dense_batch.shape[1]}"
-            )
-        if cf_batch.shape[1] != self.cf_dim:
-            raise ValueError(
-                f"CF batch dimension mismatch: "
-                f"expected {self.cf_dim}, got {cf_batch.shape[1]}"
-            )
-        
-        # Concatenate embeddings
-        concat = np.concatenate([mgte_dense_batch, cf_batch], axis=1)
-        
-        # Convert to torch tensor
-        concat_tensor = torch.from_numpy(concat).float()
-        
-        # Pass through linear layer
-        with torch.no_grad():
-            fused_tensor = self.fusion_layer(concat_tensor)
-        
-        # Convert back to numpy
-        fused = fused_tensor.numpy()
-        
-        return fused
+            content_t = torch.from_numpy(content).float().unsqueeze(0)
+            cf_t = torch.from_numpy(cf).float().unsqueeze(0)
+            # Per-branch LayerNorm, then concat directly (no shrink)
+            content_n = self.content_norm(content_t)
+            cf_n = self.cf_norm(cf_t)
+            fused = torch.cat([content_n, cf_n], dim=1)
+            out = fused.squeeze(0).numpy()
+
+        # L2 normalize output for stable COSINE similarity
+        return self._l2_normalize(out)
     
     def get_state_dict(self):
         """Get PyTorch state dict for saving"""
