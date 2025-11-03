@@ -5,7 +5,6 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from config import event_weights
-from utils import DataUtils
 from milvus import MilvusClient
 from embeddings import EmbeddingService
 from cf_model import CFModel
@@ -28,7 +27,7 @@ class Service:
         self.client = MilvusClient(milvus_host=milvus_host, milvus_port=milvus_port)
         self.dense_dim = self.client.dense_dim
         self.sparse_dim = self.client.sparse_dim
-        self.fused_dim = self.client.fused_dim
+        self.fused_dim = self.dense_dim + CF_DIM
 
         # Initialize fusion layer (no shrink; output dim = dense_dim + cf_dim)
         self.fusion = EmbeddingFusion(
