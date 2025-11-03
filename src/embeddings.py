@@ -27,18 +27,6 @@ class EmbeddingService:
             logger.error(f"Error encoding text: {e}")
             raise
     
-    def encode_texts(self, texts: List[str]) -> Dict[str, np.ndarray]:
-        """Encode multiple text queries"""
-        try:
-            result = self.ef.encode_documents(texts)
-            return {
-                "dense": result["dense"],
-                "sparse": result["sparse"]
-            }
-        except Exception as e:
-            logger.error(f"Error encoding texts: {e}")
-            raise
-    
     def encode_product(self, product_data: dict) -> Dict[str, np.ndarray]:
         """Encode product information into embeddings"""
         # Combine product text fields for encoding
@@ -58,6 +46,7 @@ class EmbeddingService:
         """Encode multiple products"""
         # Combine text fields for each product
         texts = []
+        encoded_products = []
         for product in products:
             name = product.get("name", "")
             description = product.get("description", "")
@@ -65,6 +54,6 @@ class EmbeddingService:
             if not product_text:
                 product_text = "product"
             texts.append(product_text)
-        
-        return self.encode_texts(texts)
+            encoded_products.append(self.encode_text(product_text))
 
+        return encoded_products
