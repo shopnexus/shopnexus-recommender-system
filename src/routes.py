@@ -1,8 +1,8 @@
 import time
 import logging
 from datetime import datetime
+from typing import Dict
 from flask import request, jsonify
-from utils import ResponseUtils
 
 logger = logging.getLogger(__name__)
 
@@ -57,38 +57,32 @@ def register_routes(app, service):
 
         logger.info(f"Analytics processing completed: {len(events)} events in {process_time:.3f}s (total: {total_time:.3f}s)")
 
-        return jsonify(ResponseUtils.create_performance_response(
+        return jsonify(create_performance_response(
             f"Processed {len(events)} events", len(events), process_time, total_time
         ))
 
 
-    # @app.route("/products", methods=["POST"])
-    # def update_products():
-    #     """Update products in Milvus collection"""
-    #     start_time = time.time()
-    #     data = request.json
-    #     products = data.get("products", [])
-    #     metadata_only = data.get("metadata_only", False)
+    @app.route("/products", methods=["POST"])
+    def update_products():
+        """Update products in Milvus collection"""
+        start_time = time.time()
+        data = request.json
+        products = data.get("products", [])
+        metadata_only = data.get("metadata_only", False)
 
-    #     if not products:
-    #         return jsonify({"error": "No products provided"}), 200
+        if not products:
+            return jsonify({"error": "No products provided"}), 200
 
-    #     try:
-    #         process_start = time.time()
-    #         processed_count = service.update_products_batch(products, metadata_only=metadata_only)
-    #         process_time = time.time() - process_start
-    #         total_time = time.time() - start_time
+        process_start = time.time()
+        processed_count = service.update_products_batch(products, metadata_only=metadata_only)
+        process_time = time.time() - process_start
+        total_time = time.time() - start_time
 
-    #         logger.info(f"Products update completed: {processed_count} products processed in {process_time:.3f}s (total: {total_time:.3f}s)")
+        logger.info(f"Products update completed: {processed_count} products processed in {process_time:.3f}s (total: {total_time:.3f}s)")
 
-    #         return jsonify(ResponseUtils.create_performance_response(
-    #             f"Successfully updated {processed_count} products", 
-    #             processed_count, process_time, total_time
-    #         ))
-
-    #     except Exception as e:
-    #         logger.error(f"Error updating products: {e}")
-    #         return jsonify({"error": "Failed to update products"}), 500
+        return jsonify(create_performance_response(
+            f"Successfully updated {processed_count} products", processed_count, process_time, total_time
+        ))
 
     @app.route("/training/train", methods=["POST"])
     def train_cf_model():
@@ -138,3 +132,17 @@ def register_routes(app, service):
             }
         })
 
+
+def create_performance_response(message: str, count: int, processing_time: float, 
+                                  total_time: float) -> Dict:
+  """Create standardized performance response"""
+  return {
+      "message": message,
+      "processed_at": datetime.now().isoformat(),
+      "performance": {
+          "items_count": count,
+          "processing_time_seconds": round(processing_time, 3),
+          "total_time_seconds": round(total_time, 3),
+          "items_per_second": round(count / processing_time, 2) if processing_time > 0 else 0
+      }
+  }

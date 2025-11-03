@@ -13,27 +13,27 @@ from fusion import EmbeddingFusion
 
 logger = logging.getLogger(__name__)
 
+# CF embedding dimension configuration
+CF_DIM = 64
 
 class Service:
     def __init__(self, milvus_host: str = "localhost", milvus_port: int = 19530):
         """Initialize service with Milvus connection and embedding services"""
         self.update_weight = 0.5
 
-        # Initialize Milvus client
-        self.client = MilvusClient(milvus_host=milvus_host, milvus_port=milvus_port)
-        self.dense_dim = self.client.dense_dim
-        self.fused_dim = self.client.fused_dim
-
         # Initialize embedding service
         self.embedding_service = EmbeddingService()
 
-        # Initialize fusion layer
-        # MGTE dense dim + CF dim (64) -> fused dim (768)
-        cf_dim = 64  # CF embedding dimension
+        # Initialize Milvus client (dynamic fused dim = dense_dim + cf_dim)
+        self.client = MilvusClient(milvus_host=milvus_host, milvus_port=milvus_port)
+        self.dense_dim = self.client.dense_dim
+        self.sparse_dim = self.client.sparse_dim
+        self.fused_dim = self.client.fused_dim
+
+        # Initialize fusion layer (no shrink; output dim = dense_dim + cf_dim)
         self.fusion = EmbeddingFusion(
             content_dim=self.dense_dim,
-            cf_dim=cf_dim,
-            output_dim=self.fused_dim
+            cf_dim=CF_DIM
         )
 
         # Training data storage (in-memory for MVP)
@@ -45,23 +45,12 @@ class Service:
         self.item_cf_embeddings: Optional[np.ndarray] = None
 
     def semantic_search(self, query: str, dense_weight=1.0, sparse_weight=1.0, offset=0, limit=10):
-        """Semantic search using content_products collection
-        
-        Args:
-            query: Text query string
-            dense_weight: Weight for dense vector in hybrid search
-            sparse_weight: Weight for sparse vector in hybrid search
-            offset: Offset for pagination
-            limit: Number of results to return
-            
-        Returns:
-            List of results with id and score
-        """
+        """Semantic search using content_products collection"""
         # Encode query
         query_embeddings = self.embedding_service.encode_text(query)
         
         # Perform hybrid search in content_products
-        results = self.client.hybrid_search(
+        results = self.client.semantic_search(
             query_embeddings["dense"],
             query_embeddings["sparse"],
             dense_weight=dense_weight,
@@ -73,15 +62,7 @@ class Service:
         return [{"id": hit["id"], "score": float(hit.score)} for hit in results[0]]
 
     def recommend(self, account_id: int, limit: int = 10):
-        """Recommend products for a user using hybrid_products collection
-        
-        Args:
-            account_id: User account ID
-            limit: Number of recommendations
-            
-        Returns:
-            List of recommended products with id and score
-        """
+        """Recommend products for a user using hybrid_products collection"""
         # Get user fused vector from hybrid_customers
         user_vectors = self.client.get_hybrid_user_vectors([account_id])
         user_vector = user_vectors.get(account_id)
@@ -102,15 +83,7 @@ class Service:
         return [{"id": hit["id"], "score": float(hit.score)} for hit in results[0]]
     
     def _cold_start_recommendations(self, account_id: int, limit: int):
-        """Cold-start recommendations using content embeddings
-        
-        Args:
-            account_id: User account ID
-            limit: Number of recommendations
-            
-        Returns:
-            List of recommended products with id and score
-        """
+        """Cold-start recommendations using content embeddings"""
         # For cold-start, return popular items from content_products
         # In a real system, you might want to use actual popular items from analytics
         # For now, we'll return empty list and log a message
@@ -141,17 +114,8 @@ class Service:
         self.training_data.extend(valid_interactions)
         logger.info(f"Ingested {len(valid_interactions)} interactions. Total: {len(self.training_data)}")
 
-    def train_cf_model(self, epochs: int = 50, batch_size: int = 256, embedding_dim: int = 64):
-        """Train CF model from ingested training data
-        
-        Args:
-            epochs: Number of training epochs
-            batch_size: Batch size for training
-            embedding_dim: Dimension of CF embeddings
-            
-        Returns:
-            Training history dictionary
-        """
+    def train_cf_model(self, epochs: int = 50, batch_size: int = 256):
+        """Train CF model from ingested training data"""
         if not self.training_data:
             logger.error("No training data available. Please ingest training data first.")
             return {"error": "No training data available"}
@@ -166,7 +130,7 @@ class Service:
         num_items = max(item_ids) + 1
         
         logger.info(f"Unique users: {len(user_ids)}, Unique items: {len(item_ids)}")
-        logger.info(f"Model dimensions: users={num_users}, items={num_items}, embedding_dim={embedding_dim}")
+        logger.info(f"Model dimensions: users={num_users}, items={num_items}, embedding_dim={CF_DIM}")
         
         # Create user and item ID mappings (to ensure contiguous IDs starting from 0)
         user_id_map = {uid: idx for idx, uid in enumerate(sorted(user_ids))}
@@ -182,17 +146,38 @@ class Service:
             for interaction in self.training_data
         ]
         
-        # Initialize and train CF model
+        # Prepare warm-start matrices if available
+        initial_user = None
+        initial_item = None
+        if getattr(self, 'user_cf_embeddings', None) is not None and getattr(self, 'user_id_map', None) is not None:
+            initial_user = np.zeros((len(user_ids), CF_DIM), dtype=np.float32)
+            for uid, new_idx in user_id_map.items():
+                old_idx = self.user_id_map.get(uid)
+                if old_idx is not None and old_idx < self.user_cf_embeddings.shape[0]:
+                    initial_user[new_idx] = self.user_cf_embeddings[old_idx]
+        if getattr(self, 'item_cf_embeddings', None) is not None and getattr(self, 'item_id_map', None) is not None:
+            initial_item = np.zeros((len(item_ids), CF_DIM), dtype=np.float32)
+            for iid, new_idx in item_id_map.items():
+                old_idx = self.item_id_map.get(iid)
+                if old_idx is not None and old_idx < self.item_cf_embeddings.shape[0]:
+                    initial_item[new_idx] = self.item_cf_embeddings[old_idx]
+
+        # Initialize and train CF model (with L2, seed, early stopping)
         self.cf_model = CFModel(
             num_users=len(user_ids),
             num_items=len(item_ids),
-            embedding_dim=embedding_dim
+            embedding_dim=CF_DIM,
+            l2_lambda=1e-5,
+            seed=42,
         )
         
         history = self.cf_model.train(
             interactions=mapped_interactions,
             epochs=epochs,
-            batch_size=batch_size
+            batch_size=batch_size,
+            patience=3,
+            initial_user_embeddings=initial_user,
+            initial_item_embeddings=initial_item,
         )
         
         # Get trained embeddings
@@ -229,7 +214,6 @@ class Service:
         # Update hybrid_products
         hybrid_product_ids = []
         hybrid_product_vectors = []
-        hybrid_product_metadata = []
         
         for item_id in training_item_ids:
             if item_id not in item_id_map:
@@ -245,16 +229,14 @@ class Service:
             content_vector = content_vectors[item_id]
             
             # Fuse embeddings
-            fused_vector = self.fusion.fuse_item_embedding(content_vector, item_cf_embedding)
+            fused_vector = self.fusion.fuse_embeddings(content_vector, item_cf_embedding)
             
             hybrid_product_ids.append(item_id)
             hybrid_product_vectors.append(fused_vector.tolist())
-            hybrid_product_metadata.append({})  # Empty metadata for now
         
         if hybrid_product_ids:
             entities = [
                 hybrid_product_ids,
-                hybrid_product_metadata,
                 hybrid_product_vectors
             ]
             self.client.upsert_hybrid_products(entities)
@@ -296,7 +278,7 @@ class Service:
                 recent_content_avg = np.mean(list(user_content_vectors.values()), axis=0)
             
             # Fuse embeddings
-            fused_vector = self.fusion.fuse_user_embedding(recent_content_avg, user_cf_embedding)
+            fused_vector = self.fusion.fuse_embeddings(recent_content_avg, user_cf_embedding)
             
             hybrid_user_ids.append(user_id)
             hybrid_user_vectors.append(fused_vector.tolist())
@@ -314,7 +296,7 @@ class Service:
         
         Args:
             account_id: User account ID
-            events: List of event dictionaries
+            events: List of event dictionaries [{'ref_id': int, 'event_type': str, 'date_created': str}]
         """
         # Calculate recent content embedding average from events
         product_ids = [event.get("ref_id") for event in events if event.get("ref_id")]
@@ -346,7 +328,7 @@ class Service:
         user_cf_embedding = self.user_cf_embeddings[model_user_idx]
         
         # Fuse embeddings
-        fused_vector = self.fusion.fuse_user_embedding(recent_content_avg, user_cf_embedding)
+        fused_vector = self.fusion.fuse_embeddings(recent_content_avg, user_cf_embedding)
         
         # Update in Milvus
         entities = [
@@ -393,8 +375,3 @@ class Service:
         # Flush collections
         self.client.hybrid_customers_collection.flush()
         self.client.content_products_collection.flush()
-
-    # Keep old methods for backward compatibility (legacy support)
-    def hybrid_search(self, query, dense_weight=1.0, sparse_weight=1.0, offset=0, limit=10):
-        """Legacy method - redirects to semantic_search"""
-        return self.semantic_search(query, dense_weight, sparse_weight, offset, limit)

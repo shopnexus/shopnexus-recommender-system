@@ -16,16 +16,9 @@ class EmbeddingService:
         self.dense_dim = self.ef.dim["dense"]
     
     def encode_text(self, text: str) -> Dict[str, np.ndarray]:
-        """Encode text query into dense and sparse vectors
-        
-        Args:
-            text: Input text to encode
-            
-        Returns:
-            Dictionary with 'dense' and 'sparse' numpy arrays
-        """
+        """Encode text query into dense and sparse vectors"""
         try:
-            result = self.ef([text])
+            result = self.ef.encode_documents([text])
             return {
                 "dense": result["dense"][0],
                 "sparse": result["sparse"][[0]]
@@ -35,16 +28,9 @@ class EmbeddingService:
             raise
     
     def encode_texts(self, texts: List[str]) -> Dict[str, np.ndarray]:
-        """Encode multiple text queries
-        
-        Args:
-            texts: List of input texts to encode
-            
-        Returns:
-            Dictionary with 'dense' and 'sparse' numpy arrays (batched)
-        """
+        """Encode multiple text queries"""
         try:
-            result = self.ef(texts)
+            result = self.ef.encode_documents(texts)
             return {
                 "dense": result["dense"],
                 "sparse": result["sparse"]
@@ -54,14 +40,7 @@ class EmbeddingService:
             raise
     
     def encode_product(self, product_data: dict) -> Dict[str, np.ndarray]:
-        """Encode product information into embeddings
-        
-        Args:
-            product_data: Dictionary containing product fields (name, description, etc.)
-            
-        Returns:
-            Dictionary with 'dense' and 'sparse' numpy arrays
-        """
+        """Encode product information into embeddings"""
         # Combine product text fields for encoding
         name = product_data.get("name", "")
         description = product_data.get("description", "")
@@ -76,14 +55,7 @@ class EmbeddingService:
         return self.encode_text(product_text)
     
     def encode_products(self, products: List[dict]) -> Dict[str, np.ndarray]:
-        """Encode multiple products
-        
-        Args:
-            products: List of product dictionaries
-            
-        Returns:
-            Dictionary with 'dense' and 'sparse' numpy arrays (batched)
-        """
+        """Encode multiple products"""
         # Combine text fields for each product
         texts = []
         for product in products:
