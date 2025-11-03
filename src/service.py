@@ -311,8 +311,8 @@ class Service:
             logger.warning(f"No content vectors found for products: {product_ids}")
             return
         
-        # Average content embeddings
-        recent_content_avg = np.mean(list(content_vectors.values()), axis=0)
+        # Compute weighted recent content vector
+        recent_content_avg = self._compute_weighted_content_avg(events, content_vectors)
         
         # Get user CF embedding if available
         if self.user_cf_embeddings is None:
@@ -337,6 +337,41 @@ class Service:
         self.client.upsert_hybrid_customers(entities)
         
         logger.info(f"Updated user embedding for account {account_id}")
+
+    def _compute_weighted_content_avg(self, events: List[Dict], content_vectors: Dict[int, np.ndarray]) -> np.ndarray:
+        """Compute a weighted average of product content vectors based on event weights and metadata.
+        Falls back to unweighted mean; returns zeros if no vectors available.
+        """
+        if not content_vectors:
+            return np.zeros(self.dense_dim)
+        weighted_sum = None
+        total_weight = 0.0
+        for ev in events:
+            pid = ev.get("ref_id")
+            if pid is None or pid not in content_vectors:
+                continue
+            base_w = event_weights.get(ev.get("event_type"), 0.0)
+            meta_w = 1.0
+            meta = ev.get("metadata") or {}
+            qty = meta.get("quantity")
+            price = meta.get("price")
+            if isinstance(qty, (int, float)):
+                meta_w *= min(qty / 5.0, 2.0)
+            if isinstance(price, (int, float)):
+                meta_w *= min(price / 1_000_000.0, 1.5)
+            w = float(base_w) * float(meta_w)
+            if w == 0.0:
+                continue
+            vec = content_vectors[pid]
+            weighted_sum = vec * w if weighted_sum is None else (weighted_sum + vec * w)
+            total_weight += w
+        if weighted_sum is not None and total_weight > 0.0:
+            return weighted_sum / total_weight
+        # Fallbacks
+        try:
+            return np.mean(list(content_vectors.values()), axis=0)
+        except Exception:
+            return np.zeros(self.dense_dim)
 
     def process_events_batch(self, events: List[Dict]):
         """Process events and update user vectors (legacy method for backward compatibility)
