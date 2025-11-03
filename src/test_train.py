@@ -103,15 +103,10 @@ def upsert_content_products(client: MilvusClient, movies: Dict[int, Dict]):
     ratings = [0.0 for _ in movie_ids]
     skus = [[] for _ in movie_ids]
     specifications = [{} for _ in movie_ids]
-    sparse_list = []
-    dense_list = []
 
-    for text in texts:
-        enc = embedding.encode_text(text)
-        dense = enc["dense"]
-        sparse = enc["sparse"]
-        sparse_list.append(sparse)
-        dense_list.append(dense)
+    encoded_texts = embedding.embed_texts(texts)
+    sparse_list = [enc["sparse"] for enc in encoded_texts]
+    dense_list = [enc["dense"] for enc in encoded_texts]
 
     entities = [
         ids,

@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from pymilvus import (
     connections,
-    utility,
     FieldSchema,
     CollectionSchema,
     DataType,
@@ -13,8 +12,6 @@ from pymilvus import (
     WeightedRanker,
 )
 from pymilvus.model.hybrid import MGTEEmbeddingFunction
-
-from config import DESCRIPTION_LENGTH
 
 logger = logging.getLogger(__name__)
 

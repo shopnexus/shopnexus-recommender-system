@@ -46,7 +46,7 @@ class Service:
     def semantic_search(self, query: str, dense_weight=1.0, sparse_weight=1.0, offset=0, limit=10):
         """Semantic search using content_products collection"""
         # Encode query
-        query_embeddings = self.embedding_service.encode_text(query)
+        query_embeddings = self.embedding_service.embed_text(query)
         
         # Perform hybrid search in content_products
         results = self.client.semantic_search(
