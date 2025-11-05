@@ -4,28 +4,39 @@ DESCRIPTION_LENGTH = 10 * 1024
 
 event_weights = {
     # === HIGH INTENT EVENTS (Strong purchase/interest signals) ===
-    "purchase": 1.0,                    # Strongest signal - actual conversion
-    "repeat_purchase": 1.2,             # Even stronger - proven preference
-    "add_to_cart": 0.5,                 # Strong intent but not committed
+    "purchase": 1.0,  # Strongest signal - actual conversion
+    "repeat_purchase": 1.2,  # Even stronger - proven preference
+    "add_to_cart": 0.5,  # Strong intent but not committed
+    "view": 0.3,  # Strong intent but not committed
     # "checkout_initiated": 0.7,          # Started checkout process
     # "add_to_wishlist": 0.6,             # Save for future - strong interest
-    "add_to_favorites": 0.6,            # Permanent save - strong signal
-    
+    "add_to_favorites": 0.6,  # Permanent save - strong signal
     # === SOCIAL & VALIDATION EVENTS ===
-    "write_review": 0.5,                # Active engagement post-purchase
-    "rating_high": 0.4,                 # Rating 4-5 stars
-    "rating_medium": 0.1,               # Rating 3 stars - neutral
-    "ask_question": 0.25,               # Considering purchase
-    
+    "write_review": 0.5,  # Active engagement post-purchase
+    "rating_high": 0.4,  # Rating 4-5 stars
+    "rating_medium": 0.1,  # Rating 3 stars - neutral
+    "ask_question": 0.25,  # Considering purchase
     # === DISCOVERY EVENTS (Lower but important) ===
     "click_from_recommendation": 0.15,  # Responded to algo suggestion
-    "click_from_search": 0.2,           # Intent-driven discovery
-    "click_from_category": 0.12,        # Browsing discovery
-    "view_similar_products": 0.15,      # Exploring options
-    
+    "click_from_search": 0.2,  # Intent-driven discovery
+    "click_from_category": 0.12,  # Browsing discovery
+    "view_similar_products": 0.15,  # Exploring options
     # === NEGATIVE SIGNALS (Important to prevent bad recommendations) ===
-    "remove_from_cart": -0.25,          # Changed mind
-    "return_product": -0.4,             # Strong negative
-    "rating_low": -0.4,                 # Rating 1-2 stars
-    "report_product": -1.0,             # Strongest negative
+    # Strengthened and diversified to provide ample true negatives
+    "remove_from_cart": -0.3,  # Changed mind
+    "return_product": -0.6,  # Strong negative (post-purchase dissatisfaction)
+    "refund_requested": -0.7,  # Stronger than return intent
+    "cancel_order": -0.6,  # Order cancelled before fulfillment
+    "rating_low": -0.5,  # Rating 1-2 stars
+    "report_product": -1.2,  # Strongest explicit negative
+    "dislike": -0.5,  # Explicit dislike/ thumbs-down
+    "hide_item": -0.35,  # User hides/blocks the item
+    "not_interested": -0.3,  # Explicit not interested
+    "view_bounce": -0.1,  # Very short view / bounce
 }
+
+# Time-decay configuration for event weighting
+# Exponential decay using half-life: weight *= 0.5 ** (age_days / half_life_days)
+DECAY_ENABLED = True
+DECAY_HALF_LIFE_DAYS = 30.0
+DECAY_MIN_FACTOR = 0.05  # floor to prevent vanishing weights
