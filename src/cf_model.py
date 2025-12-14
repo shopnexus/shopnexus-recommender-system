@@ -279,7 +279,7 @@ class CFModel:
                 },
                 f,
             )
-        print(
+        logger.info(
             "Model and parameters saved to model/cf_model.keras and model/params.json"
         )
 
@@ -287,8 +287,8 @@ class CFModel:
         """
         Load a saved model and its parameters from disk, then rebuild the model.
 
-        Args:
-            filepath: Path to the saved model file
+        Returns:
+            self for method chaining
         """
         # Load parameters first
         params_filepath = "model/params.json"
@@ -296,7 +296,7 @@ class CFModel:
             logger.error(
                 f"Parameters file not found: {params_filepath}. Make sure the model was saved with train() method."
             )
-            return
+            return self
 
         with open(params_filepath, "r") as f:
             params = json.load(f)
@@ -311,7 +311,8 @@ class CFModel:
 
         # Load the model
         self.model = tf.keras.models.load_model("model/cf_model.keras")
-        print("Model loaded from model/cf_model.keras and model/params.json")
+        logger.info("Model loaded from model/cf_model.keras and model/params.json")
 
         # Rebuild embedding models
         self._build_embedding_models()
+        return self

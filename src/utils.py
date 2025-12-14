@@ -83,6 +83,15 @@ def avg_vec_by_weight(
     accum = np.zeros_like(fallback_vec, dtype=np.float32)
     sum_weight = 0.0
     for v in vectors:
-        accum += v.get("score") * v.get("vector")
-        sum_weight += v.get("score")
+        score = v.get("score", 0.0)
+        vector = v.get("vector")
+        if vector is None:
+            continue
+        accum += score * np.asarray(vector)
+        sum_weight += abs(score)  # Use absolute value to handle negative weights
+    
+    if sum_weight == 0.0:
+        logger.warning("Sum of weights is 0 in avg_vec_by_weight, returning fallback")
+        return fallback_vec
+    
     return accum / sum_weight

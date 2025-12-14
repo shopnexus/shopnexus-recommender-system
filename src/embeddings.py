@@ -3,7 +3,6 @@
 import logging
 from typing import Dict, List
 from tqdm.auto import tqdm
-from tqdm.auto import tqdm
 import numpy as np
 from pymilvus.model.hybrid import MGTEEmbeddingFunction
 

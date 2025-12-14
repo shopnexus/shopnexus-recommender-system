@@ -1,6 +1,9 @@
 """Fusion module for combining content and CF embeddings with improved stability"""
 
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingFusion:
@@ -44,13 +47,13 @@ class EmbeddingFusion:
 
         # Check for invalid values
         if np.any(np.isnan(vec)):
-            print(
-                f"Warning: NaN values detected in {name} vector, replacing with zeros"
+            logger.warning(
+                f"NaN values detected in {name} vector, replacing with zeros"
             )
             vec = np.nan_to_num(vec, nan=0.0)
 
         if np.any(np.isinf(vec)):
-            print(f"Warning: Inf values detected in {name} vector, clipping")
+            logger.warning(f"Inf values detected in {name} vector, clipping")
             vec = np.nan_to_num(vec, posinf=1.0, neginf=-1.0)
 
         return vec
@@ -86,14 +89,32 @@ class EmbeddingFusion:
         if len(content_vecs) != len(cf_vecs):
             raise ValueError(f"Batch size mismatch: {len(content_vecs)} vs {len(cf_vecs)}")
         
-        # Validate all vectors first
-        for i in range(len(content_vecs)):
-            if verbose and i % 10000 == 0:
-                print(f"Processing: {i}/{len(content_vecs)}")
-            content_vecs[i] = self._validate_input(content_vecs[i], self.content_dim, f"Content[{i}]")
-            cf_vecs[i] = self._validate_input(cf_vecs[i], self.cf_dim, f"CF[{i}]")
+        # Validate dimensions
+        if content_vecs.shape[1] != self.content_dim:
+            raise ValueError(
+                f"Content vector dimension mismatch: expected {self.content_dim}, "
+                f"got {content_vecs.shape[1]}"
+            )
+        if cf_vecs.shape[1] != self.cf_dim:
+            raise ValueError(
+                f"CF vector dimension mismatch: expected {self.cf_dim}, "
+                f"got {cf_vecs.shape[1]}"
+            )
         
-        # Vectorized concatenation - much faster!
+        # Check for invalid values (vectorized)
+        if np.any(np.isnan(content_vecs)) or np.any(np.isnan(cf_vecs)):
+            if verbose:
+                logger.warning("NaN values detected, replacing with zeros")
+            content_vecs = np.nan_to_num(content_vecs, nan=0.0)
+            cf_vecs = np.nan_to_num(cf_vecs, nan=0.0)
+        
+        if np.any(np.isinf(content_vecs)) or np.any(np.isinf(cf_vecs)):
+            if verbose:
+                logger.warning("Inf values detected, clipping")
+            content_vecs = np.nan_to_num(content_vecs, posinf=1.0, neginf=-1.0)
+            cf_vecs = np.nan_to_num(cf_vecs, posinf=1.0, neginf=-1.0)
+        
+        # Vectorized concatenation
         fused = np.concatenate([content_vecs, cf_vecs], axis=1)
         
         # Vectorized normalization

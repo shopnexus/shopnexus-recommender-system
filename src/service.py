@@ -59,9 +59,9 @@ class Service:
 
         if account_fused_vector is None:
             logger.warning(
-                f"No account vector found for account_id: {account_id}. Returning content-based fallback."
+                f"No account vector found for account_id: {account_id}. Returning empty recommendations."
             )
-            return self.semantic_search(query="", limit=limit)
+            return []
 
         # Search similar products by fused vector
         results = self.client.search(
@@ -73,33 +73,21 @@ class Service:
 
         return [{"id": hit["id"], "score": float(hit.score)} for hit in results]
 
-    def _cold_start_recommendations(self, account_id: int, limit: int):
-        """Cold-start recommendations using content embeddings"""
-        # For cold-start, you might return popular items; for now, return empty list
-        logger.info(
-            f"Cold-start recommendation requested for account {account_id}. No user vector found."
-        )
-        return []
 
     def update_products(self, products: List[Dict], metadata_only: bool):
-        """Update products in Milvus collection"""
-
         """
-        type ProductDetail struct {
-          ID             int64                  `json:"id"`
-          Code           string                 `json:"code"`
-          VendorID       int64                  `json:"vendor_id"`
-          Name           string                 `json:"name"`
-          Description    string                 `json:"description"`
-          Brand          db.CatalogBrand        `json:"brand"`
-          IsActive       bool                   `json:"is_active"`
-          Category       db.CatalogCategory     `json:"category"`
-          Rating         ProductRating          `json:"rating"`
-          Resources      []sharedmodel.Resource `json:"resources"`
-          Promotions     []ProductCardPromo     `json:"promotions"`
-          Skus           []ProductDetailSku     `json:"skus"`
-          Specifications map[string]string      `json:"specifications"`
-        }
+        Update products in Milvus collection.
+        
+        Expected product structure:
+        - id: int64
+        - name: string
+        - description: string
+        - brand: dict with 'name' key
+        - category: dict with 'name' key
+        - is_active: bool
+        - rating: dict with 'score' key
+        - skus: list
+        - specifications: dict
         """
 
         upsert_products = []
@@ -117,8 +105,8 @@ class Service:
                 ]
             )
             embeddings = {
-                products[i].get("id"): embedding
-                for i, embedding in enumerate(embeddings)
+                product.get("id"): embedding
+                for product, embedding in zip(products, embeddings)
             }
             item_cf_vectors = self.client.get_vectors(
                 self.client.products_collection,
@@ -143,15 +131,20 @@ class Service:
                 ),
             )
 
-        for i, product in enumerate(products):
+        for product in products:
+            # Safe access with fallbacks to prevent None errors
+            brand = product.get("brand") or {}
+            category = product.get("category") or {}
+            rating = product.get("rating") or {}
+            
             update = {
                 "id": product.get("id"),
-                "name": product.get("name"),
-                "description": product.get("description"),
-                "brand": product.get("brand").get("name"),
-                "category": product.get("category").get("name"),
-                "is_active": product.get("is_active"),
-                "rating": product.get("rating").get("score"),
+                "name": product.get("name", ""),
+                "description": product.get("description", ""),
+                "brand": brand.get("name", ""),
+                "category": category.get("name", ""),
+                "is_active": product.get("is_active", False),
+                "rating": rating.get("score", 0.0),
                 "skus": product.get("skus") or [],
                 "specifications": product.get("specifications") or {},
             }
@@ -186,8 +179,7 @@ class Service:
         for event in events:
             account_events[event.get("account_id")].append(event)
 
-        # Fetch vectors
-        user_ids = list(set([event.get("account_id") for event in events]))
+        # Fetch vectors for all referenced items
         item_ids = set([event.get("ref_id") for event in events])
 
         item_content_vectors = self.client.get_vectors(
@@ -240,43 +232,52 @@ class Service:
         l2_reg: Optional[float] = None,
         dropout_rate: Optional[float] = None,
     ):
-        """Resume training the model, NOTE: NOT READY YET"""
-
-        # Fetch things
-        events = self.client.get_rows(
-            self.client.interactions_collection,
-            output_fields=["account_id", "ref_id", "event_type", "date_created"],
-        )
-        user_ids = list(set([event.get("account_id") for event in events]))
-        item_ids = set([event.get("ref_id") for event in events])
-        scores = np.array(
-            [
-                get_event_weight(event.get("event_type"), event.get("date_created"))
-                for event in events
-            ]
+        """
+        Resume training the model.
+        
+        NOTE: This method is incomplete. It requires an interactions/events collection
+        to be set up in Milvus to fetch training data. Currently, events are processed
+        via process_events() but not stored in a queryable collection.
+        """
+        raise NotImplementedError(
+            "resume_training is not yet implemented. "
+            "An interactions collection needs to be set up in Milvus to store events for training."
         )
 
-        # Rebuild model
-        # TODO: read the note.md
-        self.client.accounts_collection.flush()
-        self.client.products_collection.flush()
-        self.model.n_users = self.client.accounts_collection.num_entities
-        self.model.n_products = self.client.products_collection.num_entities
-        self.model.learning_rate = (
-            learning_rate if learning_rate is not None else self.model.learning_rate
-        )
-        self.model.l2_reg = l2_reg if l2_reg is not None else self.model.l2_reg
-        self.model.dropout_rate = (
-            dropout_rate if dropout_rate is not None else self.model.dropout_rate
-        )
-        self.model.build_model()
-
-        # Train model
-        self.model.train(
-            user_ids=user_ids,
-            product_ids=item_ids,
-            scores=scores,
-            shuffle=False,
-            validation_split=0.2,
-            epochs=10,
-        )
+        # TODO: Implement when interactions collection is available
+        # events = self.client.get_rows(
+        #     self.client.interactions_collection,
+        #     output_fields=["account_id", "ref_id", "event_type", "date_created"],
+        # )
+        # user_ids = list(set([event.get("account_id") for event in events]))
+        # item_ids = set([event.get("ref_id") for event in events])
+        # scores = np.array(
+        #     [
+        #         get_event_weight(event.get("event_type"), event.get("date_created"))
+        #         for event in events
+        #     ]
+        # )
+        #
+        # # Rebuild model
+        # self.client.accounts_collection.flush()
+        # self.client.products_collection.flush()
+        # self.model.n_users = self.client.accounts_collection.num_entities
+        # self.model.n_products = self.client.products_collection.num_entities
+        # self.model.learning_rate = (
+        #     learning_rate if learning_rate is not None else self.model.learning_rate
+        # )
+        # self.model.l2_reg = l2_reg if l2_reg is not None else self.model.l2_reg
+        # self.model.dropout_rate = (
+        #     dropout_rate if dropout_rate is not None else self.model.dropout_rate
+        # )
+        # self.model.build_model()
+        #
+        # # Train model
+        # self.model.train(
+        #     user_ids=user_ids,
+        #     product_ids=item_ids,
+        #     scores=scores,
+        #     shuffle=False,
+        #     validation_split=0.2,
+        #     epochs=10,
+        # )
