@@ -2,7 +2,7 @@
 
 ## 1. Tổng quan
 
-Hệ thống hoạt động như một trợ lý ảo thông minh, liên tục quan sát hành vi của người dùng để xây dựng một "chân dung số" (profile) cho mỗi người. Dựa trên chân dung này, hệ thống sẽ tìm kiếm trong kho hàng những sản phẩm có độ tương đồng cao nhất để gợi ý.
+Hệ thống hoạt động như một trợ lý ảo thông minh, liên tục quan sát hành vi của người dùng để xây dựng một "sở thích số" (profile vector) cho mỗi người. Dựa trên sở thích này, hệ thống sẽ tìm kiếm trong kho hàng những sản phẩm có độ tương đồng cao nhất để gợi ý.
 
   
 
@@ -53,11 +53,11 @@ Hệ thống lấy vector của tất cả sản phẩm bạn vừa tương tác
 
 Sở thích con người là sự pha trộn giữa **thói quen lâu dài** và **nhu cầu tức thời**. Hệ thống mô phỏng điều này bằng công thức toán học (Exponential Moving Average):
 
-* Nó lấy "Chân dung cũ" của bạn (những gì nó đã biết từ trước).
+* Nó lấy "sở thích cũ" của bạn (những gì nó đã biết từ trước).
 
 * Nó trộn với "Sở thích hiện tại" vừa tính toán được.
 
-* Kết quả là "Chân dung mới" được cập nhật vào cơ sở dữ liệu.
+* Kết quả là "sở thích mới" được cập nhật vào cơ sở dữ liệu.
 
   
 
@@ -71,7 +71,7 @@ Sở thích con người là sự pha trộn giữa **thói quen lâu dài** và
 
 Khi cần hiển thị sản phẩm cho bạn (ví dụ: ở trang chủ), hệ thống thực hiện:
 
-1.  **Truy xuất Profile**: Lấy vector chân dung hiện tại của bạn.
+1.  **Truy xuất Profile**: Lấy vector sở thích hiện tại của bạn.
 
 2.  **Tìm kiếm Tương đồng (Similarity Search)**: Quét toàn bộ kho hàng để tìm những sản phẩm có vector gần giống với vector của bạn nhất trong không gian toán học.
 
