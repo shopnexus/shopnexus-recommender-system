@@ -102,9 +102,6 @@ Dưới đây là sơ đồ chi tiết mô tả các luồng xử lý chính c�
   
 
 ```mermaid
-
----
-
 flowchart TB
 
 subgraph RecFlow["Flow lấy Recommendations"]
