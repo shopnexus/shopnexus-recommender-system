@@ -10,6 +10,7 @@ from embeddings import EmbeddingService
 from utils import avg_vec_by_event, avg_vec_by_weight, get_event_weight
 from cf_model import CFModel
 from fusion import EmbeddingFusion
+from config import ACCOUNT_UPDATE_WEIGHT
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class Service:
 
         return [{"id": hit["id"], "score": float(hit.score)} for hit in results[0]]
 
-    def recommend(self, account_id: int, limit: int = 10):
+    def recommend(self, account_id: str, limit: int = 10):
         """Recommend products for a user using accounts collection"""
         # Get account fused vector from accounts collection
         account_fused_vector = self.client.get_vector(
@@ -61,7 +62,7 @@ class Service:
             logger.warning(
                 f"No account vector found for account_id: {account_id}. Returning empty recommendations."
             )
-            return []
+            account_fused_vector = np.zeros(self.fusion.fused_dim, dtype=np.float32)
 
         # Search similar products by fused vector
         results = self.client.search(
@@ -79,7 +80,8 @@ class Service:
         Update products in Milvus collection.
         
         Expected product structure:
-        - id: int64
+        - id: string (UUID)
+        - number: int64
         - name: string
         - description: string
         - brand: dict with 'name' key
@@ -108,6 +110,7 @@ class Service:
                 product.get("id"): embedding
                 for product, embedding in zip(products, embeddings)
             }
+            # Get all cf vectors for products, with fallback to avg of similar content vectors (for new product)
             item_cf_vectors = self.client.get_vectors(
                 self.client.products_collection,
                 "cf_vector",
@@ -139,6 +142,7 @@ class Service:
             
             update = {
                 "id": product.get("id"),
+                "number": product.get("number", 0),
                 "name": product.get("name", ""),
                 "description": product.get("description", ""),
                 "brand": brand.get("name", ""),
@@ -203,6 +207,24 @@ class Service:
         # Update rows
         update_rows = []
 
+        # Batch fetch existing account vectors for blending
+        last_fused_vectors = self.client.get_vectors(
+            self.client.accounts_collection,
+            anns_field="fused_vector",
+            ids=set(account_events.keys()),
+            not_found_callback=lambda id: np.zeros(
+                self.fusion.fused_dim, dtype=np.float32
+            ),
+        )
+        last_cf_vectors = self.client.get_vectors(
+            self.client.accounts_collection,
+            anns_field="cf_vector",
+            ids=set(account_events.keys()),
+            not_found_callback=lambda id: np.zeros(
+                self.fusion.cf_dim, dtype=np.float32
+            ),
+        )
+
         for account_id, events in account_events.items():
             item_content_vec = avg_vec_by_event(
                 item_content_vectors,
@@ -216,10 +238,16 @@ class Service:
             )
 
             fused_vec = self.fusion.fuse_embeddings(item_content_vec, item_cf_vec)
+
+            # Blend with previous vector if exists (using exponential moving average)
+            cf_vec = (item_cf_vec * ACCOUNT_UPDATE_WEIGHT) + (last_cf_vectors.get(account_id) * (1 - ACCOUNT_UPDATE_WEIGHT))
+            fused_vec = (fused_vec * ACCOUNT_UPDATE_WEIGHT) + (last_fused_vectors.get(account_id) * (1 - ACCOUNT_UPDATE_WEIGHT))
+
             update_rows.append(
                 {
-                    "id": int(account_id),
-                    "cf_vector": item_cf_vec,
+                    "id": account_id,
+                    "number": events[0].get("account_number", 0),
+                    "cf_vector": cf_vec,
                     "fused_vector": fused_vec,
                 }
             )

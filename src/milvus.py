@@ -48,8 +48,9 @@ class MilvusClient:
             "description": "Products with embeddings for semantic search and recommendation",
             "schema": [
                 FieldSchema(
-                    name="id", dtype=DataType.INT64, is_primary=True, auto_id=False
+                    name="id", dtype=DataType.VARCHAR, max_length=36, is_primary=True, auto_id=False
                 ),
+                FieldSchema(name="number", dtype=DataType.INT64),
                 FieldSchema(name="name", dtype=DataType.VARCHAR, max_length=1024),
                 FieldSchema(
                     name="description", dtype=DataType.VARCHAR, max_length=10240
@@ -102,8 +103,9 @@ class MilvusClient:
             "description": "Accounts with embeddings for recommendations",
             "schema": [
                 FieldSchema(
-                    name="id", dtype=DataType.INT64, is_primary=True, auto_id=False
+                    name="id", dtype=DataType.VARCHAR, max_length=36, is_primary=True, auto_id=False
                 ),
+                FieldSchema(name="number", dtype=DataType.INT64),
                 FieldSchema(
                     name="cf_vector", dtype=DataType.FLOAT_VECTOR, dim=self.cf_dim
                 ),
@@ -202,9 +204,9 @@ class MilvusClient:
         self,
         collection: Collection,
         anns_field: str,
-        ids: Set[int],
-        not_found_callback: Callable[[int], np.ndarray] = None,
-    ) -> Dict[int, np.ndarray]:
+        ids: Set[str],
+        not_found_callback: Callable[[str], np.ndarray] = None,
+    ) -> Dict[str, np.ndarray]:
         """Get vectors from collection by list of IDs, if not found use the vector from not_found_callback"""
         results = collection.query(
             expr=f"id in {list(ids)}",
@@ -233,10 +235,10 @@ class MilvusClient:
         }
 
     def get_vector(
-        self, collection: Collection, id: int, anns_field: str
+        self, collection: Collection, id: str, anns_field: str
     ) -> Optional[np.ndarray]:
         """Get vector from collection by ID and anns_field"""
-        results = collection.query(expr=f"id == {id}", output_fields=[anns_field])
+        results = collection.query(expr=f"id == '{id}'", output_fields=[anns_field])
         return np.array(results[0].get(anns_field)) if results else None
 
     def upsert(
@@ -249,12 +251,12 @@ class MilvusClient:
         collection.flush()
 
     def get_rows(
-        self, collection: Collection, ids: List[int], output_fields: List[str]
+        self, collection: Collection, ids: List[str], output_fields: List[str]
     ) -> List[Dict]:
         """Get rows from collection by list of IDs"""
         return collection.query(expr=f"id in {ids}", output_fields=output_fields)
 
-    def get_non_existing_ids(self, collection: Collection, ids: List[int]) -> set[int]:
+    def get_non_existing_ids(self, collection: Collection, ids: List[str]) -> set[str]:
         """Get non-existing IDs from collection"""
         results = self.get_rows(collection, ids, ["id"])
         return set(

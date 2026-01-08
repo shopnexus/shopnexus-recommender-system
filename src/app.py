@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Initialize service
-service = Service("localhost")
+service = Service("127.0.0.1")
 
 # Register routes
 register_routes(app, service)

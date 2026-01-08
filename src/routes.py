@@ -38,6 +38,8 @@ def register_routes(app, service: Service):
         """Get recommendations for a user based on their preferences"""
         limit = request.args.get("limit", 10, type=int)
         account_id = request.args.get("account_id")
+
+        print(f"Account ID: {account_id}")
         results = service.recommend(account_id, limit=limit)
         return jsonify(results)
 
@@ -48,11 +50,12 @@ def register_routes(app, service: Service):
         Example:
         [
             {
-                "id": 1,
-                "account_id": 51,
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "account_id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+                "account_number": 123,
                 "event_type": "purchase",
                 "ref_type": "Product",
-                "ref_id": 10,
+                "ref_id": "b2c3d4e5-f6a7-8901-2345-678901bcdef0",
                 "date_created": "2025-01-21T14:32:10.123Z",
                 "metadata": {}
             }

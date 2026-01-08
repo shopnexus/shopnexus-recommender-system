@@ -69,8 +69,8 @@ def avg_vec_by_event(
         logger.warning("Sum of weight absolute is 0")
         return fallback_vec
 
-    user_cf_vec = accum / sum_weight_abs
-    return user_cf_vec
+    avg_vec = accum / sum_weight_abs
+    return avg_vec
 
 
 # Average vectors by weight (score) [{'id': int, 'vector': np.ndarray, 'score': float}]

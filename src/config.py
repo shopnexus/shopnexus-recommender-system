@@ -40,3 +40,6 @@ event_weights = {
 DECAY_ENABLED = True
 DECAY_HALF_LIFE_DAYS = 30.0
 DECAY_MIN_FACTOR = 0.05  # floor to prevent vanishing weights
+
+# Vector update configuration
+ACCOUNT_UPDATE_WEIGHT = 0.2  # Weight for new vector vs old vector (0.5 = equal weight)
